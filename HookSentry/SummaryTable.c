@@ -27,9 +27,10 @@ void FreeSummaryTable(LPSUMMARY_TABLE lpSummaryTable)
 
 LPSUMMARY_TABLE_ROW AddSummaryTableRow(LPSUMMARY_TABLE lpSummaryTable, DWORD dwPid)
 {
-	lpSummaryTable->Rows = (LPSUMMARY_TABLE_ROW)realloc(lpSummaryTable->Rows, (lpSummaryTable->RowsCount + 1) * sizeof(SUMMARY_TABLE_ROW));
-	if (lpSummaryTable->Rows == NULL)
+	LPSUMMARY_TABLE_ROW tmp = (LPSUMMARY_TABLE_ROW)realloc(lpSummaryTable->Rows, (lpSummaryTable->RowsCount + 1) * sizeof(SUMMARY_TABLE_ROW));
+	if (tmp == NULL)
 		return NULL;
+	lpSummaryTable->Rows = tmp;
 
 	LPSUMMARY_TABLE_ROW newRow = &lpSummaryTable->Rows[lpSummaryTable->RowsCount];
 	newRow->Pid = dwPid;
@@ -43,13 +44,16 @@ LPSUMMARY_TABLE_ROW AddSummaryTableRow(LPSUMMARY_TABLE lpSummaryTable, DWORD dwP
 
 BOOL AddSummaryTableRowInfo(LPSUMMARY_TABLE_ROW lpSummaryTableRow, PWSTR pszDllFullPath, DWORD dwHooksCount)
 {
-	lpSummaryTableRow->DllInfos = (LPDLL_INFO)realloc(lpSummaryTableRow->DllInfos, (lpSummaryTableRow->DllsCount + 1) * sizeof(DLL_INFO));
-	if (lpSummaryTableRow->DllInfos == NULL)
+	LPDLL_INFO tmp = (LPDLL_INFO)realloc(lpSummaryTableRow->DllInfos, (lpSummaryTableRow->DllsCount + 1) * sizeof(DLL_INFO));
+	if (tmp == NULL)
 		return FALSE;
+	lpSummaryTableRow->DllInfos = tmp;
 
 	lpSummaryTableRow->TotalHooks += dwHooksCount;
 	LPDLL_INFO newDll = &lpSummaryTableRow->DllInfos[lpSummaryTableRow->DllsCount];
-	newDll->DllFullPath = pszDllFullPath;
+	newDll->DllFullPath = _wcsdup(pszDllFullPath);
+	if (newDll->DllFullPath == NULL)
+		return FALSE;
 	newDll->HooksCount = dwHooksCount;
 
 	lpSummaryTableRow->DllsCount++;
@@ -59,6 +63,12 @@ BOOL AddSummaryTableRowInfo(LPSUMMARY_TABLE_ROW lpSummaryTableRow, PWSTR pszDllF
 void PrintFullTable(LPSUMMARY_TABLE lpSummaryTable)
 {
 	wprintf(L"\n\n*** SUMMARY ***\n\n");
+	
+	if (lpSummaryTable->RowsCount == 0) {
+		wprintf(L"No hooks found!\n");
+		return;
+	}
+
 	for (DWORD i = 0; i < lpSummaryTable->RowsCount; i++)
 	{
 		LPSUMMARY_TABLE_ROW row = &lpSummaryTable->Rows[i];
@@ -67,10 +77,7 @@ void PrintFullTable(LPSUMMARY_TABLE lpSummaryTable)
 		for (DWORD k = 0; k < row->DllsCount; k++)
 		{
 			LPDLL_INFO dllInfo = &row->DllInfos[k];
-			if (dllInfo->HooksCount == -1)
-				wprintf(L"\t%s skipped.\n", dllInfo->DllFullPath);
-			else
-				wprintf(L"\t%s contains %d hooks\n", dllInfo->DllFullPath, dllInfo->HooksCount);
+			wprintf(L"\t%s contains %d hooks\n", dllInfo->DllFullPath, dllInfo->HooksCount);
 		}
 
 	}

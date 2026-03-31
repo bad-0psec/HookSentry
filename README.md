@@ -3,7 +3,7 @@ HookSentry is a simple tool for inspecting system DLLs loaded into processes, lo
 
 It scans for potential hooks in system libraries and provides detailed information about each hook it finds. The tool compares the in-memory image of each DLL with its on-disk version, identifies hooked functions, and prints disassembled code to help analyze the changes.
 
-In addition to scanning a specific process or itself, HookSentry can perform a full scan of all active processes on the system. 
+In addition to scanning one or more specific processes (or itself), HookSentry can perform a full scan of all active processes on the system. 
 
 **The tool is compatible with x64 systems only.**
 
@@ -14,16 +14,26 @@ C:\Users\user\Desktop>.\HookSentry.exe -h
 |_| _  _ | (~ _  _ _|_ _
 | |(_)(_)|<_)(/_| | | |\/
                       /
-V0.4
+V0.5
 
-Usage: HookSentry.exe [-a|-p <PID>|-v]
+Usage: HookSentry.exe [-a|-p <targets>|-v|-d]
 Options:
         -h, --help: Show this message
-        -p <PID>, --pid <PID>: Analyze the process with PID <PID>
+        -p, --pid <targets>: Comma-separated list of PIDs or process names
+                             (e.g. -p 1234,notepad.exe,5678)
         -a, --all: Analyze all active processes
         -v, --verbose: Enable verbose output
         -d, --disass: Display disassembled code
 ```
+
+The `-p` option accepts a flexible comma-separated list mixing numeric PIDs and process names:
+```cmd
+HookSentry.exe -p 1234                           # single PID
+HookSentry.exe -p 1234,5678,9012                 # multiple PIDs
+HookSentry.exe -p notepad.exe                    # single process by name
+HookSentry.exe -p notepad.exe,1234,explorer.exe  # mixed PIDs and names
+```
+When a process name is specified, all running instances matching that name will be scanned.
 
 ## Example
 ```cmd
@@ -32,13 +42,14 @@ C:\Users\user\Desktop>.\HookSentry.exe -v -d
 |_| _  _ | (~ _  _ _|_ _
 | |(_)(_)|<_)(/_| | | |\/
                       /
-V0.4
+V0.5
 
 [*] Selected current process.
 ---
 [*] Working on process 1 of 1 with PID: 2120
 [*] Working on: C:\Windows\SYSTEM32\ntdll.dll
-        [+] Function ZwWriteVirtualMemory HOOKED!
+        [+] C:\Windows\SYSTEM32\ntdll.dll!ZwWriteVirtualMemory HOOKED!
+                --> Jump target: 0x7ff94f0f02f8 -> trampoline -> 0x7ff98c1c3cb0 @ C:\Program Files\EDR\Hooks.dll
 
                 Function in memory:
 
@@ -51,12 +62,10 @@ V0.4
 
                 0x9DC20:        mov             r10, rcx
                 0x9DC23:        mov             eax, 0x3a
-
+                        
 
 [...]
 
-[*] C:\Program Files\Bitdefender\Bitdefender Security\bdhkm\dlls_266864023745032704\bdhkm64.dll not a system library. skipped.
-[*] C:\Program Files\Bitdefender\Bitdefender Security\atcuf\dlls_267396668276705800\atcuf64.dll not a system library. skipped.
 [*] Working on: C:\Windows\System32\ucrtbase.dll
 [*] Working on: C:\Windows\SYSTEM32\VCRUNTIME140.dll
 

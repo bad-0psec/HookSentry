@@ -1,45 +1,146 @@
 #include <Windows.h>
 #include <wchar.h>
+#include <stdlib.h>
 #include <psapi.h>
 #include "SummaryTable.h"
 #include "HookSentry.h"
 
 #pragma comment(lib, "psapi")
 
+/*
+* Finds all PIDs whose base module name matches the given process name (case-insensitive).
+* Returns the number of PIDs written into outPids (up to maxOut).
+*/
+static DWORD ResolveProcessName(const wchar_t* name, DWORD* outPids, DWORD maxOut)
+{
+	DWORD allPids[1024], cbNeeded;
+	if (!EnumProcesses(allPids, sizeof(allPids), &cbNeeded))
+		return 0;
+
+	DWORD count = cbNeeded / sizeof(DWORD);
+	DWORD found = 0;
+
+	for (DWORD i = 0; i < count && found < maxOut; i++)
+	{
+		if (allPids[i] == 0)
+			continue;
+
+		HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, allPids[i]);
+		if (!hProc)
+			continue;
+
+		wchar_t baseName[MAX_PATH];
+		if (GetModuleBaseNameW(hProc, NULL, baseName, MAX_PATH) > 0)
+		{
+			if (_wcsicmp(baseName, name) == 0)
+				outPids[found++] = allPids[i];
+		}
+		CloseHandle(hProc);
+	}
+	return found;
+}
+
+/*
+* Parses a comma-separated list of PIDs and/or process names.
+* Numeric tokens are treated as PIDs; non-numeric tokens are resolved to PIDs by name.
+* Returns a malloc'd array of DWORDs; caller must free(). Sets *outCount.
+* Returns NULL on failure.
+*/
+static DWORD* ParseTargets(const wchar_t* arg, SIZE_T* outCount)
+{
+	*outCount = 0;
+
+	SIZE_T capacity = 16;
+	DWORD* pids = (DWORD*)malloc(capacity * sizeof(DWORD));
+	if (!pids)
+		return NULL;
+
+	/* Make a mutable copy for wcstok */
+	SIZE_T len = wcslen(arg) + 1;
+	wchar_t* buf = (wchar_t*)malloc(len * sizeof(wchar_t));
+	if (!buf) { free(pids); return NULL; }
+	wcscpy_s(buf, len, arg);
+
+	wchar_t* ctx = NULL;
+	wchar_t* token = wcstok_s(buf, L",", &ctx);
+	while (token != NULL)
+	{
+		/* Try to parse as a number */
+		wchar_t* endPtr = NULL;
+		long val = wcstol(token, &endPtr, 10);
+		if (endPtr != token && *endPtr == L'\0' && val > 0)
+		{
+			/* It's a PID */
+			if (*outCount >= capacity)
+			{
+				capacity *= 2;
+				DWORD* tmp = (DWORD*)realloc(pids, capacity * sizeof(DWORD));
+				if (!tmp) { free(pids); free(buf); return NULL; }
+				pids = tmp;
+			}
+			pids[(*outCount)++] = (DWORD)val;
+		}
+		else
+		{
+			/* Treat as process name */
+			DWORD resolved[256];
+			DWORD nResolved = ResolveProcessName(token, resolved, 256);
+			if (nResolved == 0)
+			{
+				wprintf(L"[!] No process found with name: %ls\n", token);
+			}
+			for (DWORD r = 0; r < nResolved; r++)
+			{
+				if (*outCount >= capacity)
+				{
+					capacity *= 2;
+					DWORD* tmp = (DWORD*)realloc(pids, capacity * sizeof(DWORD));
+					if (!tmp) { free(pids); free(buf); return NULL; }
+					pids = tmp;
+				}
+				pids[(*outCount)++] = resolved[r];
+			}
+		}
+		token = wcstok_s(NULL, L",", &ctx);
+	}
+
+	free(buf);
+	if (*outCount == 0) { free(pids); return NULL; }
+	return pids;
+}
+
 static void SearchHooksInPIDs(DWORD* pids, SIZE_T pidListSize, BOOL verbose, BOOL printDisass)
 {
 	SUMMARY_TABLE table;
-	if (verbose)
-		InitSummaryTable(&table);
+	InitSummaryTable(&table);
 
-		for (DWORD count = 0; count < pidListSize; count++)
-		{
-			wprintf(L"---\n[*] Working on process %d of %llu with PID: %d\n", count + 1, pidListSize, pids[count]);
+	for (DWORD count = 0; count < pidListSize; count++)
+	{
+		wprintf(L"---\n[*] Working on process %d of %zu with PID: %lu\n", count + 1, pidListSize, pids[count]);
 
-			HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pids[count]);
-			if (!hProcess) {
-				wprintf(L"[-] Cannot open an handle on PID: %d  (Low priv?)\n", pids[count]);
-				continue;
-			}			
-
-			if (!SearchHooks(hProcess, &table, verbose, printDisass))
-				wprintf(L"[!] Task failed for process %d. Skipping.\n", pids[count]);
-
-			CloseHandle(hProcess);
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pids[count]);
+		if (!hProcess) {
+			wprintf(L"[-] Cannot open an handle on PID: %lu  (Low priv?)\n", pids[count]);
+			continue;
 		}
 
-		if (verbose) {
-			PrintFullTable(&table);
-			FreeSummaryTable(&table);
-		}
+		if (!SearchHooks(hProcess, &table, verbose, printDisass))
+			wprintf(L"[!] Task failed for process %lu. Skipping.\n", pids[count]);
+
+		CloseHandle(hProcess);
+	}
+
+	PrintFullTable(&table);
+	FreeSummaryTable(&table);
 }
 
 static void PrintUsage()
 {
-	wprintf(L"Usage: HookSentry.exe [-a|-p <PID>|-v|-d]\n");
+	wprintf(L"Usage: HookSentry.exe [-a|-p <targets>|-v|-d]\n");
 	wprintf(L"Options:\n");
 	wprintf(L"\t-h, --help: Show this message\n");
-	wprintf(L"\t-p <PID>, --pid <PID>: Analyze the process with PID <PID>\n");
+	wprintf(L"\t-p, --pid <targets>: Comma-separated list of PIDs or process names\n");
+	wprintf(L"\t                     (e.g. -p 1234,notepad.exe,5678)\n");
 	wprintf(L"\t-a, --all: Analyze all active processes\n");
 	wprintf(L"\t-v, --verbose: Enable verbose output\n");
 	wprintf(L"\t-d, --disass: Display disassembled code\n");
@@ -50,15 +151,16 @@ int wmain(int argc, wchar_t* argv[])
 	wchar_t banner[] = L""
 		"\n|_| _  _ | (~ _  _ _|_ _\n"
 		"| |(_)(_)|<_)(/_| | | |\\/\n"
-		"                      /\nV0.4\n\n";
+		"                      /\nV0.5\n\n";
 	wprintf(L"%s", banner);
 
-	int pid = 0;
+	DWORD* targetPids = NULL;
+	SIZE_T targetCount = 0;
 	BOOL verbose = FALSE;
 	BOOL disass = FALSE;
 	BOOL fullScan = FALSE;
 
-	for (int i = 0; i < argc; i++)
+	for (int i = 1; i < argc; i++)
 	{
 		// -h, --help --> Print Usage
 		if (wcscmp(argv[i], L"-h") == 0 || wcscmp(argv[i], L"--help") == 0)
@@ -67,39 +169,54 @@ int wmain(int argc, wchar_t* argv[])
 			return 1;
 		}
 
-		// -p <PID>, --pid <pid> --> Work on specific PID
-		if (wcscmp(argv[i], L"-p") == 0 || wcscmp(argv[i], L"--pid") == 0)
+		// -p <targets>, --pid <targets> --> Work on specific PIDs/process names
+		else if (wcscmp(argv[i], L"-p") == 0 || wcscmp(argv[i], L"--pid") == 0)
 		{
-			pid = _wtoi(argv[i + 1]);
-			if (pid == 0) {
-				wprintf(L"Invalid PID.\n\n");
+			if (i + 1 >= argc) {
+				wprintf(L"Missing argument for -p.\n\n");
 				PrintUsage();
 				return 1;
 			}
+			targetPids = ParseTargets(argv[i + 1], &targetCount);
+			if (targetPids == NULL || targetCount == 0) {
+				wprintf(L"No valid targets found in: %ls\n\n", argv[i + 1]);
+				PrintUsage();
+				return 1;
+			}
+			i++;
 		}
 
 		// -v, --verbose --> Verbose output
-		if (wcscmp(argv[i], L"-v") == 0 || wcscmp(argv[i], L"--verbose") == 0)
+		else if (wcscmp(argv[i], L"-v") == 0 || wcscmp(argv[i], L"--verbose") == 0)
 		{
 			verbose = TRUE;
 		}
 
 		// -a, --all --> Works on all active processes
-		if (wcscmp(argv[i], L"-a") == 0 || wcscmp(argv[i], L"--all") == 0)
+		else if (wcscmp(argv[i], L"-a") == 0 || wcscmp(argv[i], L"--all") == 0)
 		{
 			fullScan = TRUE;
 		}
 
 		// -d, --disass --> Print disassembled code
-#ifdef _CS_ENABLED
-		if (wcscmp(argv[i], L"-d") == 0 || wcscmp(argv[i], L"--disass") == 0)
+		else if (wcscmp(argv[i], L"-d") == 0 || wcscmp(argv[i], L"--disass") == 0)
 		{
+#ifdef _CS_ENABLED
 			disass = TRUE;
-		}
+#else
+			wprintf(L"[!] Disassembly not available in this build.\n");
 #endif
+		}
+
+		else
+		{
+			wprintf(L"[!] Unknown argument: %ls\n\n", argv[i]);
+			PrintUsage();
+			return 1;
+		}
 	}
 
-	if (!fullScan && pid == 0)
+	if (!fullScan && targetPids == NULL)
 	{
 		wprintf(L"[*] Selected current process.\n");
 
@@ -107,10 +224,10 @@ int wmain(int argc, wchar_t* argv[])
 		SearchHooksInPIDs(pids, 1, verbose, disass);
 	}
 
-	else if (!fullScan && pid > 0)
+	else if (!fullScan && targetPids != NULL)
 	{
-		DWORD pids[] = { pid };
-		SearchHooksInPIDs(pids, 1, verbose, disass);
+		SearchHooksInPIDs(targetPids, targetCount, verbose, disass);
+		free(targetPids);
 	}
 
 	else if (fullScan)
@@ -124,7 +241,7 @@ int wmain(int argc, wchar_t* argv[])
 			return 1;
 		}
 		cbPids = cbNeeded / sizeof(DWORD);
-		wprintf(L"[*] %d active processes found\n", cbPids);
+		wprintf(L"[*] %lu active processes found\n", cbPids);
 
 		SearchHooksInPIDs(pids, cbPids, verbose, disass);
 	}
