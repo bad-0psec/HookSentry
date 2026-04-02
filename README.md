@@ -14,9 +14,9 @@ C:\Users\user\Desktop>.\HookSentry.exe -h
 |_| _  _ | (~ _  _ _|_ _
 | |(_)(_)|<_)(/_| | | |\/
                       /
-V0.5
+V0.5.1
 
-Usage: HookSentry.exe [-a|-p <targets>|-v|-d]
+Usage: HookSentry.exe [-a|-p <targets>|-v|-d|-o <file>]
 Options:
         -h, --help: Show this message
         -p, --pid <targets>: Comma-separated list of PIDs or process names
@@ -24,6 +24,7 @@ Options:
         -a, --all: Analyze all active processes
         -v, --verbose: Enable verbose output
         -d, --disass: Display disassembled code
+        -o, --output <file>: Write all output to file
 ```
 
 The `-p` option accepts a flexible comma-separated list mixing numeric PIDs and process names:
@@ -35,14 +36,14 @@ HookSentry.exe -p notepad.exe,1234,explorer.exe  # mixed PIDs and names
 ```
 When a process name is specified, all running instances matching that name will be scanned.
 
-## Example
+## Example (single process, verbose)
 ```cmd
 C:\Users\user\Desktop>.\HookSentry.exe -v -d
 
 |_| _  _ | (~ _  _ _|_ _
 | |(_)(_)|<_)(/_| | | |\/
                       /
-V0.5
+V0.5.1
 
 [*] Selected current process.
 ---
@@ -71,8 +72,56 @@ V0.5
 
 *** SUMMARY ***
 
-[+] PID: 2120 has 139 hooked functions
-        C:\Windows\SYSTEM32\ntdll.dll contains 86 hooks
-        C:\Windows\System32\KERNEL32.DLL contains 8 hooks
-        C:\Windows\System32\KERNELBASE.dll contains 45 hooks
+[+] PID: 2120 - 139 hooks found
+    C:\Windows\SYSTEM32\ntdll.dll: 86 hooks
+    C:\Windows\System32\KERNEL32.DLL: 8 hooks
+    C:\Windows\System32\KERNELBASE.dll: 45 hooks
+  Hooking libraries:
+    Hooks.dll hooks:
+      - ntdll.dll!ZwWriteVirtualMemory
+      - ntdll.dll!NtAllocateVirtualMemory
+      - KERNEL32.DLL!CreateProcessW
+      [...]
+```
+
+## Example (aggregate report, full scan)
+When scanning multiple processes (`-a` or `-p` with multiple targets), an aggregate report is appended that groups results by hooking library:
+```cmd
+C:\Users\user\Desktop>.\HookSentry.exe -a
+
+[...]
+
+*** SUMMARY ***
+
+[+] PID: 2120 - 139 hooks found
+    C:\Windows\SYSTEM32\ntdll.dll: 86 hooks
+    C:\Windows\System32\KERNEL32.DLL: 8 hooks
+    C:\Windows\System32\KERNELBASE.dll: 45 hooks
+  Hooking libraries:
+    Hooks.dll hooks:
+      - ntdll.dll!ZwWriteVirtualMemory
+      - KERNEL32.DLL!CreateProcessW
+      [...]
+
+[+] PID: 4560 - 139 hooks found
+    C:\Windows\SYSTEM32\ntdll.dll: 86 hooks
+    C:\Windows\System32\KERNEL32.DLL: 8 hooks
+    C:\Windows\System32\KERNELBASE.dll: 45 hooks
+  Hooking libraries:
+    Hooks.dll hooks:
+      - ntdll.dll!ZwWriteVirtualMemory
+      - KERNEL32.DLL!CreateProcessW
+      [...]
+
+
+*** AGGREGATE REPORT ***
+
+Hooking library: C:\Program Files\EDR\Hooks.dll
+  Injected into PIDs: 2120, 4560
+  Hooked functions:
+    - ntdll.dll!ZwWriteVirtualMemory
+    - ntdll.dll!NtAllocateVirtualMemory
+    - KERNEL32.DLL!CreateProcessW
+    - KERNELBASE.dll!CreateProcessInternalW
+    [...]
 ```

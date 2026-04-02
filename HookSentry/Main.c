@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <wchar.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <psapi.h>
 #include "SummaryTable.h"
 #include "HookSentry.h"
@@ -109,34 +110,36 @@ static DWORD* ParseTargets(const wchar_t* arg, SIZE_T* outCount)
 	return pids;
 }
 
-static void SearchHooksInPIDs(DWORD* pids, SIZE_T pidListSize, BOOL verbose, BOOL printDisass)
+static void SearchHooksInPIDs(DWORD* pids, SIZE_T pidListSize, BOOL verbose, BOOL printDisass, BOOL aggregate)
 {
 	SUMMARY_TABLE table;
 	InitSummaryTable(&table);
 
 	for (DWORD count = 0; count < pidListSize; count++)
 	{
-		wprintf(L"---\n[*] Working on process %d of %zu with PID: %lu\n", count + 1, pidListSize, pids[count]);
+		print_verbose(verbose, L"---\n[*] Working on process %d of %zu with PID: %lu\n", count + 1, pidListSize, pids[count]);
 
 		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pids[count]);
 		if (!hProcess) {
-			wprintf(L"[-] Cannot open an handle on PID: %lu  (Low priv?)\n", pids[count]);
+			print_verbose(verbose, L"[-] Cannot open an handle on PID: %lu  (Low priv?)\n", pids[count]);
 			continue;
 		}
 
 		if (!SearchHooks(hProcess, &table, verbose, printDisass))
-			wprintf(L"[!] Task failed for process %lu. Skipping.\n", pids[count]);
+			print_verbose(verbose, L"[!] Task failed for process %lu. Skipping.\n", pids[count]);
 
 		CloseHandle(hProcess);
 	}
 
 	PrintFullTable(&table);
+	if (aggregate)
+		PrintAggregateReport(&table);
 	FreeSummaryTable(&table);
 }
 
 static void PrintUsage()
 {
-	wprintf(L"Usage: HookSentry.exe [-a|-p <targets>|-v|-d]\n");
+	wprintf(L"Usage: HookSentry.exe [-a|-p <targets>|-v|-d|-o <file>]\n");
 	wprintf(L"Options:\n");
 	wprintf(L"\t-h, --help: Show this message\n");
 	wprintf(L"\t-p, --pid <targets>: Comma-separated list of PIDs or process names\n");
@@ -144,6 +147,7 @@ static void PrintUsage()
 	wprintf(L"\t-a, --all: Analyze all active processes\n");
 	wprintf(L"\t-v, --verbose: Enable verbose output\n");
 	wprintf(L"\t-d, --disass: Display disassembled code\n");
+	wprintf(L"\t-o, --output <file>: Write all output to file\n");
 }
 
 int wmain(int argc, wchar_t* argv[])
@@ -151,7 +155,7 @@ int wmain(int argc, wchar_t* argv[])
 	wchar_t banner[] = L""
 		"\n|_| _  _ | (~ _  _ _|_ _\n"
 		"| |(_)(_)|<_)(/_| | | |\\/\n"
-		"                      /\nV0.5\n\n";
+		"                      /\nV0.5.1\n\n";
 	wprintf(L"%s", banner);
 
 	DWORD* targetPids = NULL;
@@ -159,6 +163,7 @@ int wmain(int argc, wchar_t* argv[])
 	BOOL verbose = FALSE;
 	BOOL disass = FALSE;
 	BOOL fullScan = FALSE;
+	PWSTR outputFile = NULL;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -208,6 +213,18 @@ int wmain(int argc, wchar_t* argv[])
 #endif
 		}
 
+		// -o <file>, --output <file> --> Write output to file
+		else if (wcscmp(argv[i], L"-o") == 0 || wcscmp(argv[i], L"--output") == 0)
+		{
+			if (i + 1 >= argc) {
+				wprintf(L"Missing argument for -o.\n\n");
+				PrintUsage();
+				return 1;
+			}
+			outputFile = argv[i + 1];
+			i++;
+		}
+
 		else
 		{
 			wprintf(L"[!] Unknown argument: %ls\n\n", argv[i]);
@@ -216,35 +233,51 @@ int wmain(int argc, wchar_t* argv[])
 		}
 	}
 
+	/* Redirect stdout to file if -o was specified */
+	FILE* outFileStream = NULL;
+	if (outputFile != NULL)
+	{
+		if (_wfreopen_s(&outFileStream, outputFile, L"w", stdout) != 0)
+		{
+			fwprintf(stderr, L"[!] Failed to open output file: %ls\n", outputFile);
+			return 1;
+		}
+		fwprintf(stderr, L"[*] Output redirected to: %ls\n", outputFile);
+	}
+
 	if (!fullScan && targetPids == NULL)
 	{
-		wprintf(L"[*] Selected current process.\n");
+		print_verbose(verbose, L"[*] Selected current process.\n");
 
 		DWORD pids[] = { GetCurrentProcessId() };
-		SearchHooksInPIDs(pids, 1, verbose, disass);
+		SearchHooksInPIDs(pids, 1, verbose, disass, FALSE);
 	}
 
 	else if (!fullScan && targetPids != NULL)
 	{
-		SearchHooksInPIDs(targetPids, targetCount, verbose, disass);
+		SearchHooksInPIDs(targetPids, targetCount, verbose, disass, targetCount > 1);
 		free(targetPids);
 	}
 
 	else if (fullScan)
 	{
-		wprintf(L"[*] Full system scan requested (could take a while)\n");
+		print_verbose(verbose, L"[*] Full system scan requested (could take a while)\n");
 
 		DWORD pids[1024], cbNeeded, cbPids;
 		if (!EnumProcesses(pids, sizeof(pids), &cbNeeded))
 		{
 			wprintf(L"[-] Failed to enumerate processes.\n");
+			if (outFileStream) fclose(outFileStream);
 			return 1;
 		}
 		cbPids = cbNeeded / sizeof(DWORD);
-		wprintf(L"[*] %lu active processes found\n", cbPids);
+		print_verbose(verbose, L"[*] %lu active processes found\n", cbPids);
 
-		SearchHooksInPIDs(pids, cbPids, verbose, disass);
+		SearchHooksInPIDs(pids, cbPids, verbose, disass, TRUE);
 	}
+
+	if (outFileStream)
+		fclose(outFileStream);
 
 	return 0;
 }

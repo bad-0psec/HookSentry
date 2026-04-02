@@ -51,6 +51,7 @@ BOOL BuildModuleMap(HANDLE hProcess, LPMODULE_MAP moduleMap)
 
 	moduleMap->Modules = NULL;
 	moduleMap->Count = 0;
+	DWORD capacity = 0;
 
 	if (NtQueryInformationProcess(hProcess, (PROCESSINFOCLASS)0, &processBasicInformation, sizeof(PROCESS_BASIC_INFORMATION), 0) != 0)
 		return FALSE;
@@ -80,13 +81,17 @@ BOOL BuildModuleMap(HANDLE hProcess, LPMODULE_MAP moduleMap)
 		if (ldrEntry.DllBase == NULL)
 			continue;
 
-		LPMODULE_INFO tmp = (LPMODULE_INFO)realloc(moduleMap->Modules, (moduleMap->Count + 1) * sizeof(MODULE_INFO));
-		if (tmp == NULL)
+		if (moduleMap->Count >= capacity)
 		{
-			FreeModuleMap(moduleMap);
-			return FALSE;
+			capacity = capacity == 0 ? 16 : capacity * 2;
+			LPMODULE_INFO tmp = (LPMODULE_INFO)realloc(moduleMap->Modules, capacity * sizeof(MODULE_INFO));
+			if (tmp == NULL)
+			{
+				FreeModuleMap(moduleMap);
+				return FALSE;
+			}
+			moduleMap->Modules = tmp;
 		}
-		moduleMap->Modules = tmp;
 
 		MODULE_INFO* mod = &moduleMap->Modules[moduleMap->Count];
 		mod->BaseAddress = ldrEntry.DllBase;
@@ -263,6 +268,14 @@ BOOL SearchHooks(HANDLE hProcess, LPSUMMARY_TABLE table, BOOL verbose, BOOL prin
 	*/
 	PVOID pFirstAddress = ldrEntry.Reserved1[0];
 
+	WCHAR systemDllPath[MAX_PATH];
+	if (!GetSystemDllPath(systemDllPath, MAX_PATH))
+	{
+		FreeModuleMap(&moduleMap);
+		return FALSE;
+	}
+	SIZE_T systemDllPathLen = wcslen(systemDllPath);
+
 	/*
 	* Start iterating through the modules in the InLoadOrderModuleList.
 	*/
@@ -298,14 +311,7 @@ BOOL SearchHooks(HANDLE hProcess, LPSUMMARY_TABLE table, BOOL verbose, BOOL prin
 			continue;
 		}
 
-		WCHAR systemDllPath[MAX_PATH];
-		if (!GetSystemDllPath(systemDllPath, MAX_PATH))
-		{
-			free(dllName);
-			FreeModuleMap(&moduleMap);
-			return FALSE;
-		}
-		if (_wcsnicmp(dllName, systemDllPath, wcslen(systemDllPath)) != 0)
+		if (_wcsnicmp(dllName, systemDllPath, systemDllPathLen) != 0)
 		{
 			print_verbose(verbose, L"[*] %ls not a system library. skipped.\n", dllName);
 			free(dllName);
@@ -412,7 +418,6 @@ BOOL SearchHooks(HANDLE hProcess, LPSUMMARY_TABLE table, BOOL verbose, BOOL prin
 		/*
 		*  Finally, we can go through all the functions in the export directory and look for those damn hooks!
 		*/
-		DWORD hookCount = 0;
 		while (numberOfNames > 0)
 		{
 			PCHAR functionName = RVA2VA(PCHAR, pDllImageBase, RvaToFileOffset(ntHeader, iNames[numberOfNames - 1]));
@@ -480,31 +485,40 @@ BOOL SearchHooks(HANDLE hProcess, LPSUMMARY_TABLE table, BOOL verbose, BOOL prin
 					}
 				}
 
-				hookCount++;
-
-				wprintf(L"\t[+] Function %ls!%hs HOOKED!\n", dllName, functionName);
+				print_verbose(verbose, L"\t[+] Function %ls!%hs HOOKED!\n", dllName, functionName);
 				if (targetResolved)
 				{
 					if (trampolineFollowed)
 					{
 						if (targetModuleName != NULL)
-							wprintf(L"\t\t--> Jump target: 0x%llx -> trampoline -> 0x%llx @ %ls\n",
+							print_verbose(verbose, L"\t\t--> Jump target: 0x%llx -> trampoline -> 0x%llx @ %ls\n",
 								(unsigned long long)jumpTarget, (unsigned long long)finalTarget, targetModuleName);
 						else
-							wprintf(L"\t\t--> Jump target: 0x%llx -> trampoline -> 0x%llx @ <unknown module>\n",
+							print_verbose(verbose, L"\t\t--> Jump target: 0x%llx -> trampoline -> 0x%llx @ <unknown module>\n",
 								(unsigned long long)jumpTarget, (unsigned long long)finalTarget);
 					}
 					else
 					{
 						if (targetModuleName != NULL)
-							wprintf(L"\t\t--> Jump target: 0x%llx @ %ls\n", (unsigned long long)jumpTarget, targetModuleName);
+							print_verbose(verbose, L"\t\t--> Jump target: 0x%llx @ %ls\n", (unsigned long long)jumpTarget, targetModuleName);
 						else
-							wprintf(L"\t\t--> Jump target: 0x%llx @ <unknown module>\n", (unsigned long long)jumpTarget);
+							print_verbose(verbose, L"\t\t--> Jump target: 0x%llx @ <unknown module>\n", (unsigned long long)jumpTarget);
+					}
+				}
+
+				if (table != NULL) {
+					LPSUMMARY_TABLE_ROW row = FindOrAddSummaryTableRow(table, GetProcessId(hProcess));
+					if (row != NULL) {
+						LPDLL_INFO di = FindOrAddDllInfo(row, dllName);
+						if (di != NULL) {
+							AddHookEntry(di, functionName,
+								targetModuleName ? targetModuleName : L"<unknown module>");
+						}
 					}
 				}
 
 #ifdef _CS_ENABLED
-				if (printDisass)
+				if (verbose && printDisass)
 				{
 					wprintf(L"\n\t\tFunction in memory:\n\n");
 					PrintDisasm(mFunctionAddress, MAX_INSN_LEN, vaFunctionAddress);
@@ -515,24 +529,6 @@ BOOL SearchHooks(HANDLE hProcess, LPSUMMARY_TABLE table, BOOL verbose, BOOL prin
 #endif
 			}
 			numberOfNames--;
-		}
-
-		if (table != NULL && hookCount > 0) {
-			LPSUMMARY_TABLE_ROW row = AddSummaryTableRow(table, GetProcessId(hProcess));
-			if (row == NULL) {
-				wprintf(L"[!!!] out of memory\n");
-				free(dllName);
-				HeapFree(GetProcessHeap(), 0, pDllImageBase);
-				FreeModuleMap(&moduleMap);
-				return FALSE;
-			}
-			if (!AddSummaryTableRowInfo(row, dllName, hookCount)) {
-				wprintf(L"[!!!] out of memory\n");
-				free(dllName);
-				HeapFree(GetProcessHeap(), 0, pDllImageBase);
-				FreeModuleMap(&moduleMap);
-				return FALSE;
-			}
 		}
 
 		free(dllName);

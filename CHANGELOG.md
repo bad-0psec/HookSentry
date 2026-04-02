@@ -1,5 +1,12 @@
 # HookSentry Changelog
 
+## [0.5.1] - 2026-04-02
+
+### Added
+- **Output to file**: New `-o <file>` / `--output <file>` flag to redirect all output to a file
+- **Aggregate report for multi-PID**: Aggregate report now auto-enabled when `-p` targets multiple processes (not just `-a`)
+
+
 ## [0.5] - 2026-03-31
 
 ### Added
