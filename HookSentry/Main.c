@@ -208,6 +208,7 @@ int wmain(int argc, wchar_t* argv[])
 		{
 #ifdef _CS_ENABLED
 			disass = TRUE;
+			verbose = TRUE;
 #else
 			wprintf(L"[!] Disassembly not available in this build.\n");
 #endif
@@ -247,7 +248,7 @@ int wmain(int argc, wchar_t* argv[])
 
 	if (!fullScan && targetPids == NULL)
 	{
-		print_verbose(verbose, L"[*] Selected current process.\n");
+		wprintf(L"[*] Selected current process.\n");
 
 		DWORD pids[] = { GetCurrentProcessId() };
 		SearchHooksInPIDs(pids, 1, verbose, disass, FALSE);
@@ -261,7 +262,7 @@ int wmain(int argc, wchar_t* argv[])
 
 	else if (fullScan)
 	{
-		print_verbose(verbose, L"[*] Full system scan requested (could take a while)\n");
+		wprintf(L"[*] Full system scan requested (could take a while)\n");
 
 		DWORD pids[1024], cbNeeded, cbPids;
 		if (!EnumProcesses(pids, sizeof(pids), &cbNeeded))
@@ -271,7 +272,7 @@ int wmain(int argc, wchar_t* argv[])
 			return 1;
 		}
 		cbPids = cbNeeded / sizeof(DWORD);
-		print_verbose(verbose, L"[*] %lu active processes found\n", cbPids);
+		wprintf(L"[*] %lu active processes found\n", cbPids);
 
 		SearchHooksInPIDs(pids, cbPids, verbose, disass, TRUE);
 	}

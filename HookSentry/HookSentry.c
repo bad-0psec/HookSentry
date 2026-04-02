@@ -439,7 +439,14 @@ BOOL SearchHooks(HANDLE hProcess, LPSUMMARY_TABLE table, BOOL verbose, BOOL prin
 
 			/*
 			* FIRST CHECK - functions should be exactly the same.
+			* Validate that iFunctionAddress is readable before memcmp
 			*/
+			if (IsBadReadPtr(iFunctionAddress, MAX_INSN_LEN)) {
+				print_verbose(verbose, L"[!] Invalid disk function address %p for %hs. Skipping.\n", iFunctionAddress, functionName);
+				numberOfNames--;
+				continue;
+			}
+			
 			if (memcmp(mFunctionContent, iFunctionAddress, MAX_INSN_LEN) != 0)
 			{
 				/*
